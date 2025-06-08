@@ -391,7 +391,7 @@ class FAISSPerformanceTracker:
         return index.search(query_embeddings, k)
 
 def main(): 
-    csv_path = "/kaggle/input/5-tuple-ip-flow-data/ip_flow_dataset.csv" 
+    csv_path = "ip_flow_dataset.csv" 
     
     df = pd.read_csv(
         csv_path,
