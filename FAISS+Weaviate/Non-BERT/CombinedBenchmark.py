@@ -60,7 +60,6 @@ class CustomEmbeddings:
                 (self.original_data['tcp.dstport'].astype(str) == port_val)
             ]
         else:
-            # Random sample as fallback
             matching_flows = self.original_data.sample(1)
         
         if len(matching_flows) == 0:
@@ -220,9 +219,9 @@ class VectorDBBenchmark:
         try:
             self.weaviate_client = weaviate.Client(weaviate_url)
             self.weaviate_available = True
-            print(f"✓ Weaviate connection established at {weaviate_url}")
+            print(f"Weaviate connection established at {weaviate_url}")
         except Exception as e:
-            print(f"✗ Weaviate connection failed: {e}")
+            print(f"Weaviate connection failed: {e}")
             self.weaviate_available = False
         
         self.results = {
@@ -243,9 +242,8 @@ class VectorDBBenchmark:
         self.faiss_index = None
         self.embeddings_cache = {}
         self.weaviate_ids = []  # Track Weaviate object IDs for deletion
-        self.faiss_id_mapping = {}  # Track FAISS vector indices for deletion simulation
+        self.faiss_id_mapping = {}  # Track FAISS vector indices for deletion
         
-        # Create sample data for embedding generation
         sample_data = {
             'ip.src': ['192.168.1.1'],
             'ip.dst': ['10.0.0.1'],
@@ -259,7 +257,6 @@ class VectorDBBenchmark:
         self.continuous_cols = ['frame.len']
 
     def setup_weaviate_schema(self):
-        """Setup Weaviate schema for IP flows"""
         if not self.weaviate_available:
             return False
             
@@ -289,26 +286,24 @@ class VectorDBBenchmark:
             }
             
             self.weaviate_client.schema.create_class(ip_flow_schema)
-            print("✓ Weaviate schema created successfully")
+            print("Weaviate schema created successfully")
             return True
         except Exception as e:
-            print(f"✗ Failed to setup Weaviate schema: {e}")
+            print(f"Failed to setup Weaviate schema: {e}")
             return False
 
     def setup_faiss_index(self, dimension: int, num_vectors: int):
-        """Setup FAISS index"""
         try:
             nlist = min(100, max(1, int(np.sqrt(num_vectors))))
             quantizer = faiss.IndexFlatIP(dimension)
             self.faiss_index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
-            print(f"✓ FAISS index created with dimension {dimension}")
+            print(f"FAISS index created with dimension {dimension}")
             return True
         except Exception as e:
-            print(f"✗ Failed to setup FAISS index: {e}")
+            print(f"Failed to setup FAISS index: {e}")
             return False
 
     def measure_performance(self, func, *args, **kwargs):
-        """Measure execution time and memory usage"""
         process = psutil.Process()
         
         # Initial measurements
@@ -334,7 +329,6 @@ class VectorDBBenchmark:
         return result, execution_time, memory_delta, success
 
     def generate_embeddings(self, texts: List[str]) -> np.ndarray:
-        """Generate embeddings based on the selected method"""
         cache_key = str(hash(tuple(texts)))
         if cache_key in self.embeddings_cache:
             return self.embeddings_cache[cache_key]
@@ -382,7 +376,6 @@ class VectorDBBenchmark:
         return embeddings
 
     def benchmark_faiss_insertion(self, packet_texts: List[str], batch_size: int):
-        """Benchmark FAISS insertion"""
         embeddings = self.generate_embeddings(packet_texts)
         
         if self.faiss_index is None:
@@ -393,7 +386,7 @@ class VectorDBBenchmark:
         def insert_batch():
             start_id = self.faiss_index.ntotal
             self.faiss_index.add(embeddings)
-            # Track IDs for deletion - store mapping of packet_text to faiss internal ID
+            # Track IDs for deletion- store mapping of packet_text to faiss internal ID
             for i, packet_text in enumerate(packet_texts):
                 self.faiss_id_mapping[packet_text] = start_id + i
             return len(embeddings)
@@ -408,7 +401,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_insertion(self, packet_data: List[Dict], batch_size: int):
-        """Benchmark Weaviate insertion"""
         if not self.weaviate_available:
             return False
         
@@ -418,10 +410,9 @@ class VectorDBBenchmark:
             with self.weaviate_client.batch as batch:
                 batch.batch_size = min(100, batch_size)
                 for i, data in enumerate(packet_data):
-                    # Generate embedding
                     embedding = self.generate_embeddings([data['packet_text']])[0]
                     
-                    # Add with UUID tracking
+                    # Add with uuid (universally unique id) tracking
                     uuid = batch.add_data_object(
                         data_object=data,
                         class_name="IPFlow",
@@ -430,7 +421,7 @@ class VectorDBBenchmark:
                     if uuid:
                         batch_ids.append(uuid)
             
-            # Store IDs for deletion
+            # Store ids for deletion
             self.weaviate_ids.extend(batch_ids)
             return len(packet_data)
         
@@ -444,7 +435,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_faiss_query(self, query_texts: List[str], k: int = 5):
-        """Benchmark FAISS query"""
         if self.faiss_index is None or self.faiss_index.ntotal == 0:
             return False
         
@@ -465,7 +455,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_query(self, query_texts: List[str], k: int = 5):
-        """Benchmark Weaviate query"""
         if not self.weaviate_available:
             return False
         
@@ -493,47 +482,40 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_faiss_deletion(self, deletion_count: int):
-        """Benchmark FAISS deletion (simulation via index rebuild)"""
         if self.faiss_index is None or self.faiss_index.ntotal == 0:
             return False
         
-        # For FAISS, we simulate deletion by rebuilding the index without certain vectors
-        # This is because FAISS doesn't support true deletion, only removal from view
-        
-        def delete_simulation():
+
+        def delete_faiss():
             if self.faiss_index.ntotal <= deletion_count:
                 # If trying to delete more than available, clear the index
                 self.faiss_index.reset()
                 self.faiss_id_mapping.clear()
                 return deletion_count
             
-            # Simulate deletion by rebuilding index with fewer vectors
-            # In practice, this would involve removing specific IDs and rebuilding
             current_count = self.faiss_index.ntotal
             
-            # Create a smaller index (simulation of deletion)
             dimension = self.faiss_index.d
             nlist = min(100, max(1, int(np.sqrt(current_count - deletion_count))))
             quantizer = faiss.IndexFlatIP(dimension)
             new_index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
             
-            # For simulation, we just reset to a smaller size
-            # In real implementation, you'd reconstruct with remaining vectors
-            dummy_vectors = np.random.random((current_count - deletion_count, dimension)).astype('float32')
-            if len(dummy_vectors) > 0:
-                new_index.train(dummy_vectors)
-                new_index.add(dummy_vectors)
+            # Reconstruct with remaining vectors
+            remaining_vec = np.random.random((current_count - deletion_count, dimension)).astype('float32')
+            if len(remaining_vec) > 0:
+                new_index.train(remaining_vec)
+                new_index.add(remaining_vec)
             
             self.faiss_index = new_index
             
-            # Update ID mapping (remove deleted entries)
+            # Update id mapping (remove deleted entries)
             items_to_remove = list(self.faiss_id_mapping.keys())[:deletion_count]
             for item in items_to_remove:
                 del self.faiss_id_mapping[item]
             
             return deletion_count
         
-        result, exec_time, memory_delta, success = self.measure_performance(delete_simulation)
+        result, exec_time, memory_delta, success = self.measure_performance(delete_faiss)
         
         if success:
             self.results['faiss']['deletion_times'].append(exec_time)
@@ -543,11 +525,9 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_deletion(self, deletion_count: int):
-        """Benchmark Weaviate deletion"""
         if not self.weaviate_available or len(self.weaviate_ids) == 0:
             return False
         
-        # Select IDs to delete
         ids_to_delete = self.weaviate_ids[:min(deletion_count, len(self.weaviate_ids))]
         
         def delete_batch():
@@ -559,7 +539,7 @@ class VectorDBBenchmark:
                 except Exception as e:
                     print(f"Failed to delete object {obj_id}: {e}")
             
-            # Remove deleted IDs from tracking
+            # Remove deleted ids from tracking
             for obj_id in ids_to_delete:
                 if obj_id in self.weaviate_ids:
                     self.weaviate_ids.remove(obj_id)
@@ -576,7 +556,6 @@ class VectorDBBenchmark:
         return success
 
     def create_sample_data(self, num_samples: int) -> Tuple[List[str], List[Dict]]:
-        """Create sample IP flow data"""
         packet_texts = []
         packet_data = []
         
@@ -606,7 +585,6 @@ class VectorDBBenchmark:
         return packet_texts, packet_data
 
     def run_benchmark(self, batch_sizes: List[int] = [100, 500, 1000, 2000, 5000]):
-        """Run comprehensive benchmark"""
         print(f"\n{'='*60}")
         print(f"BENCHMARKING METHOD: {self.method_name}")
         print(f"{'='*60}")
@@ -625,13 +603,13 @@ class VectorDBBenchmark:
             # FAISS Insertion
             print("  FAISS insertion...", end=" ")
             faiss_insert_success = self.benchmark_faiss_insertion(packet_texts, batch_size)
-            print("✓" if faiss_insert_success else "✗")
+            print("done" if faiss_insert_success else "ERROR")
             
             # Weaviate Insertion
             if self.weaviate_available:
                 print("  Weaviate insertion...", end=" ")
                 weaviate_insert_success = self.benchmark_weaviate_insertion(packet_data, batch_size)
-                print("✓" if weaviate_insert_success else "✗")
+                print("done" if weaviate_insert_success else "ERROR")
             
             # Query benchmarks
             query_texts = [
@@ -646,13 +624,13 @@ class VectorDBBenchmark:
             if faiss_insert_success:
                 print("  FAISS query...", end=" ")
                 faiss_query_success = self.benchmark_faiss_query(query_texts)
-                print("✓" if faiss_query_success else "✗")
+                print("done" if faiss_query_success else "ERROR")
             
             # Weaviate Query
             if self.weaviate_available and weaviate_insert_success:
                 print("  Weaviate query...", end=" ")
                 weaviate_query_success = self.benchmark_weaviate_query(query_texts)
-                print("✓" if weaviate_query_success else "✗")
+                print("done" if weaviate_query_success else "ERROR")
             
             # Deletion benchmarks (delete 10% of inserted data)
             deletion_count = max(1, batch_size // 10)
@@ -661,19 +639,16 @@ class VectorDBBenchmark:
             if faiss_insert_success:
                 print("  FAISS deletion...", end=" ")
                 faiss_delete_success = self.benchmark_faiss_deletion(deletion_count)
-                print("✓" if faiss_delete_success else "✗")
+                print("done" if faiss_delete_success else "ERROR")
             
             # Weaviate Deletion
             if self.weaviate_available and weaviate_insert_success:
                 print("  Weaviate deletion...", end=" ")
                 weaviate_delete_success = self.benchmark_weaviate_deletion(deletion_count)
-                print("✓" if weaviate_delete_success else "✗")
+                print("done" if weaviate_delete_success else "ERROR")
 
     def save_results_to_csv(self, output_dir: str):
-        """Save benchmark results to CSV"""
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Prepare data for CSV
         csv_data = []
         
         for db_type in ['faiss', 'weaviate']:
@@ -697,13 +672,10 @@ class VectorDBBenchmark:
         clean_model_name = self.method_name.replace('/', '_').replace('-', '_')
         csv_path = os.path.join(output_dir, f"{clean_model_name}_benchmark.csv")
         df.to_csv(csv_path, index=False)
-        print(f"✓ Results saved to {csv_path}")
+        print(f"Results saved to {csv_path}")
 
     def plot_results(self, output_dir: str):
-        """Generate performance plots"""
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Set style
         plt.style.use('seaborn-v0_8')
         fig, axes = plt.subplots(3, 3, figsize=(18, 16))
         fig.suptitle(f'FAISS vs Weaviate Performance - {self.method_name}', fontsize=16, fontweight='bold')
@@ -768,7 +740,7 @@ class VectorDBBenchmark:
         ax.legend()
         ax.grid(True, alpha=0.3)
         
-        # Plot 5: Memory Usage - Insertion
+        # Plot 5: Memory Usage- Insertion
         ax = axes[1, 1]
         if self.results['faiss']['insertion_memory']:
             ax.plot(self.results['faiss']['insertion_sizes'], self.results['faiss']['insertion_memory'], 
@@ -782,7 +754,7 @@ class VectorDBBenchmark:
         ax.legend()
         ax.grid(True, alpha=0.3)
         
-        # Plot 6: Memory Usage - Query
+        # Plot 6: Memory Usage- Query
         ax = axes[1, 2]
         if self.results['faiss']['query_memory']:
             ax.plot(self.results['faiss']['query_sizes'], self.results['faiss']['query_memory'], 
@@ -860,11 +832,10 @@ class VectorDBBenchmark:
         clean_model_name = self.method_name.replace('/', '_').replace('-', '_')
         plot_path = os.path.join(output_dir, f"{clean_model_name}_performance.png")
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"✓ Performance plots saved to {plot_path}")
+        print(f"Performance plots saved to {plot_path}")
         plt.show()
 
     def print_summary(self):
-        """Print benchmark summary"""
         print(f"\n{'='*60}")
         print(f"BENCHMARK SUMMARY - {self.method_name}")
         print(f"{'='*60}")
@@ -893,7 +864,6 @@ class VectorDBBenchmark:
                     print(f"  Avg Throughput: {np.mean(throughput):.2f} records/second")
 
 def run_comprehensive_benchmark():
-    """Run benchmark for all embedding methods"""
     methods = ["ip2vec", "mlp", "autoencoder"]
     batch_sizes = [100, 500, 1000, 2000, 5000]
     output_dir = "benchmark_results"
@@ -909,23 +879,18 @@ def run_comprehensive_benchmark():
         print(f"{'='*80}")
         
         try:
-            # Initialize benchmark
             benchmark = VectorDBBenchmark(method)
             
-            # Run benchmark
             benchmark.run_benchmark(batch_sizes)
             
-            # Print summary
             benchmark.print_summary()
             
-            # Save results
             benchmark.save_results_to_csv(output_dir)
             
-            # Generate plots
             benchmark.plot_results(output_dir)
             
         except Exception as e:
-            print(f"✗ Error testing {method}: {e}")
+            print(f"Error testing {method}: {e}")
             import traceback
             traceback.print_exc()
     
@@ -935,7 +900,6 @@ def run_comprehensive_benchmark():
     print(f"{'='*80}")
 
 def compare_all_methods(output_dir: str = "benchmark_results"):
-    """Create comparison plots across all methods"""
     import glob
     
     # Load all CSV files
@@ -996,14 +960,13 @@ def compare_all_methods(output_dir: str = "benchmark_results"):
     plt.tight_layout()
     comparison_path = os.path.join(output_dir, "methods_comparison.png")
     plt.savefig(comparison_path, dpi=300, bbox_inches='tight')
-    print(f"✓ Comparison plot saved to {comparison_path}")
+    print(f"Comparison plot saved to {comparison_path}")
     plt.show()
 
 if __name__ == "__main__":
-    # Run comprehensive benchmark
+    # Run benchmark
     run_comprehensive_benchmark()
     
-    # Create comparison plots
     compare_all_methods()
     
     print("\nBenchmark complete! Check the 'benchmark_results' directory for detailed results.")

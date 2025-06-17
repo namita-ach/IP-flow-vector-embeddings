@@ -15,7 +15,6 @@ from datetime import datetime
 import random
 import re
 
-# Suppress warnings
 warnings.filterwarnings('ignore')
 
 class VectorDBBenchmark:
@@ -28,9 +27,9 @@ class VectorDBBenchmark:
         try:
             self.weaviate_client = weaviate.Client(weaviate_url)
             self.weaviate_available = True
-            print(f"✓ Weaviate connection established at {weaviate_url}")
+            print(f"Weaviate connection established at {weaviate_url}")
         except Exception as e:
-            print(f"✗ Weaviate connection failed: {e}")
+            print(f"Weaviate connection failed: {e}")
             self.weaviate_available = False
         
         # Performance tracking
@@ -62,7 +61,6 @@ class VectorDBBenchmark:
         self.next_faiss_id = 0
 
     def setup_weaviate_schema(self):
-        """Setup Weaviate schema for IP flows"""
         if not self.weaviate_available:
             return False
             
@@ -93,26 +91,24 @@ class VectorDBBenchmark:
             }
             
             self.weaviate_client.schema.create_class(ip_flow_schema)
-            print("✓ Weaviate schema created successfully")
+            print("Weaviate schema created successfully")
             return True
         except Exception as e:
-            print(f"✗ Failed to setup Weaviate schema: {e}")
+            print(f"Failed to setup Weaviate schema: {e}")
             return False
 
     def setup_faiss_index(self, dimension: int, num_vectors: int):
-        """Setup FAISS index"""
         try:
             nlist = min(100, max(1, int(np.sqrt(num_vectors))))
             quantizer = faiss.IndexFlatIP(dimension)
             self.faiss_index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
-            print(f"✓ FAISS index created with dimension {dimension}")
+            print(f"FAISS index created with dimension {dimension}")
             return True
         except Exception as e:
-            print(f"✗ Failed to setup FAISS index: {e}")
+            print(f"Failed to setup FAISS index: {e}")
             return False
 
     def measure_performance(self, func, *args, **kwargs):
-        """Measure execution time and memory usage"""
         process = psutil.Process()
         
         # Initial measurements
@@ -138,7 +134,6 @@ class VectorDBBenchmark:
         return result, execution_time, memory_delta, success
 
     def generate_embeddings(self, texts: List[str]) -> np.ndarray:
-        """Generate and cache embeddings"""
         cache_key = str(hash(tuple(texts)))
         if cache_key in self.embeddings_cache:
             return self.embeddings_cache[cache_key]
@@ -150,7 +145,6 @@ class VectorDBBenchmark:
         return embeddings
 
     def benchmark_faiss_insertion(self, packet_texts: List[str], packet_data: List[Dict], batch_size: int):
-        """Benchmark FAISS insertion"""
         embeddings = self.generate_embeddings(packet_texts)
         
         if self.faiss_index is None:
@@ -182,7 +176,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_insertion(self, packet_data: List[Dict], batch_size: int):
-        """Benchmark Weaviate insertion"""
         if not self.weaviate_available:
             return False
         
@@ -193,7 +186,7 @@ class VectorDBBenchmark:
                     # Generate embedding
                     embedding = self.generate_embeddings([data['packet_text']])[0]
                     
-                    # Add original_id for deletion tracking
+                    # Add original id for deletion tracking
                     data_with_id = data.copy()
                     data_with_id['original_id'] = data.get('original_id', str(i))
                     
@@ -214,12 +207,11 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_faiss_deletion(self, num_to_delete: int):
-        """Benchmark FAISS deletion (rebuild index without deleted items)"""
         if self.faiss_index is None or self.faiss_index.ntotal == 0:
             return False
         
         def delete_items():
-            # Get random IDs to delete
+            # Get random ids to delete
             available_ids = list(self.faiss_data_store.keys())
             if len(available_ids) < num_to_delete:
                 return 0
@@ -232,12 +224,10 @@ class VectorDBBenchmark:
                 if faiss_id in self.faiss_id_map:
                     del self.faiss_id_map[faiss_id]
             
-            # Rebuild index (FAISS doesn't support direct deletion)
             if self.faiss_data_store:
                 remaining_texts = [data['packet_text'] for data in self.faiss_data_store.values()]
                 embeddings = self.generate_embeddings(remaining_texts)
                 
-                # Create new index
                 dimension = embeddings.shape[1]
                 nlist = min(100, max(1, int(np.sqrt(len(embeddings)))))
                 quantizer = faiss.IndexFlatIP(dimension)
@@ -247,12 +237,10 @@ class VectorDBBenchmark:
                 
                 self.faiss_index = new_index
                 
-                # Update ID mapping
                 self.faiss_id_map = {}
                 for i, (faiss_id, data) in enumerate(self.faiss_data_store.items()):
                     self.faiss_id_map[i] = data.get('original_id', str(faiss_id))
             else:
-                # Empty index
                 self.faiss_index = None
             
             return len(ids_to_delete)
@@ -267,7 +255,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_deletion(self, num_to_delete: int):
-        """Benchmark Weaviate deletion"""
         if not self.weaviate_available:
             return False
         
@@ -310,7 +297,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_faiss_simple_query(self, protocols: List[str], k: int = 5):
-        """Benchmark FAISS simple queries (protocol-based)"""
         if self.faiss_index is None or self.faiss_index.ntotal == 0:
             return False
         
@@ -346,7 +332,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_simple_query(self, protocols: List[str], k: int = 5):
-        """Benchmark Weaviate simple queries (protocol-based)"""
         if not self.weaviate_available:
             return False
         
@@ -374,7 +359,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_faiss_complex_query(self, query_params: List[Dict], k: int = 5):
-        """Benchmark FAISS complex queries (source + destination)"""
         if self.faiss_index is None or self.faiss_index.ntotal == 0:
             return False
         
@@ -411,7 +395,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_complex_query(self, query_params: List[Dict], k: int = 5):
-        """Benchmark Weaviate complex queries (source + destination)"""
         if not self.weaviate_available:
             return False
         
@@ -449,7 +432,6 @@ class VectorDBBenchmark:
         return success
 
     def parse_natural_language_query(self, nl_query: str) -> Dict:
-        """Parse natural language query into structured parameters"""
         params = {}
         
         # Extract source IP
@@ -477,17 +459,14 @@ class VectorDBBenchmark:
         return params
 
     def benchmark_faiss_nl_query(self, nl_queries: List[str], k: int = 5):
-        """Benchmark FAISS natural language queries"""
         if self.faiss_index is None or self.faiss_index.ntotal == 0:
             return False
         
         def search_batch():
             results = []
             for nl_query in nl_queries:
-                # Parse the natural language query
                 params = self.parse_natural_language_query(nl_query)
                 
-                # Create query embedding from the natural language
                 query_embedding = self.generate_embeddings([nl_query])
                 
                 # Search
@@ -543,7 +522,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_nl_query(self, nl_queries: List[str], k: int = 5):
-        """Benchmark Weaviate natural language queries"""
         if not self.weaviate_available:
             return False
         
@@ -628,7 +606,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_faiss_query(self, query_texts: List[str], k: int = 5):
-        """Benchmark FAISS basic query (backward compatibility)"""
         if self.faiss_index is None or self.faiss_index.ntotal == 0:
             return False
         
@@ -649,7 +626,6 @@ class VectorDBBenchmark:
         return success
 
     def benchmark_weaviate_query(self, query_texts: List[str], k: int = 5):
-        """Benchmark Weaviate basic query (backward compatibility)"""
         if not self.weaviate_available:
             return False
         
@@ -677,7 +653,6 @@ class VectorDBBenchmark:
         return success
 
     def create_sample_data(self, num_samples: int) -> Tuple[List[str], List[Dict]]:
-        """Create sample IP flow data"""
         packet_texts = []
         packet_data = []
         
@@ -710,14 +685,11 @@ class VectorDBBenchmark:
         return packet_texts, packet_data
 
     def create_query_sets(self, packet_data: List[Dict]) -> Tuple[List[str], List[Dict], List[str]]:
-        """Create different types of queries from the data"""
         if not packet_data:
             return [], [], []
         
-        # Simple queries (protocol-based)
         protocols = list(set([data['protocol'] for data in packet_data[:10]]))
         
-        # Complex queries (source + destination)
         complex_queries = []
         for data in packet_data[:5]:
             complex_queries.append({
@@ -742,7 +714,6 @@ class VectorDBBenchmark:
         return protocols, complex_queries, nl_queries
 
     def run_benchmark(self, batch_sizes: List[int] = [100, 500, 1000, 2000, 5000]):
-        """Run comprehensive benchmark"""
         print(f"\n{'='*60}")
         print(f"BENCHMARKING MODEL: {self.model_name}")
         print(f"{'='*60}")
@@ -762,16 +733,16 @@ class VectorDBBenchmark:
             packet_texts, packet_data = self.create_sample_data(batch_size)
             all_packet_data.extend(packet_data)
             
-            # FAISS Insertion
+            # FAISS insertion
             print("  FAISS insertion...", end=" ")
             faiss_insert_success = self.benchmark_faiss_insertion(packet_texts, packet_data, batch_size)
-            print("✓" if faiss_insert_success else "✗")
+            print("done" if faiss_insert_success else "ERROR")
             
-            # Weaviate Insertion
+            # Weaviate insertion
             if self.weaviate_available:
                 print("  Weaviate insertion...", end=" ")
                 weaviate_insert_success = self.benchmark_weaviate_insertion(packet_data, batch_size)
-                print("✓" if weaviate_insert_success else "✗")
+                print("done" if weaviate_insert_success else "ERROR")
             
             # Basic query benchmarks
             query_texts = [
@@ -782,56 +753,53 @@ class VectorDBBenchmark:
                 "192.168.0.1 10.0.0.1 TCP"
             ]
             
-            # FAISS Basic Query
             if faiss_insert_success:
                 print("  FAISS basic query...", end=" ")
                 faiss_query_success = self.benchmark_faiss_query(query_texts)
-                print("✓" if faiss_query_success else "✗")
+                print("done" if faiss_query_success else "ERROR")
             
-            # Weaviate Basic Query
             if self.weaviate_available and weaviate_insert_success:
                 print("  Weaviate basic query...", end=" ")
                 weaviate_query_success = self.benchmark_weaviate_query(query_texts)
-                print("✓" if weaviate_query_success else "✗")
+                print("done" if weaviate_query_success else "ERROR")
             
-            # Create query sets from current data
+            # make query sets from current data
             protocols, complex_queries, nl_queries = self.create_query_sets(packet_data)
             
-            # Simple queries (protocol-based)
             if protocols:
                 if faiss_insert_success:
                     print("  FAISS simple queries...", end=" ")
                     faiss_simple_success = self.benchmark_faiss_simple_query(protocols)
-                    print("✓" if faiss_simple_success else "✗")
+                    print("done" if faiss_simple_success else "ERROR")
                 
                 if self.weaviate_available and weaviate_insert_success:
                     print("  Weaviate simple queries...", end=" ")
                     weaviate_simple_success = self.benchmark_weaviate_simple_query(protocols)
-                    print("✓" if weaviate_simple_success else "✗")
+                    print("done" if weaviate_simple_success else "ERROR")
             
             # Complex queries (source + destination)
             if complex_queries:
                 if faiss_insert_success:
                     print("  FAISS complex queries...", end=" ")
                     faiss_complex_success = self.benchmark_faiss_complex_query(complex_queries)
-                    print("✓" if faiss_complex_success else "✗")
+                    print("done" if faiss_complex_success else "ERROR")
                 
                 if self.weaviate_available and weaviate_insert_success:
                     print("  Weaviate complex queries...", end=" ")
                     weaviate_complex_success = self.benchmark_weaviate_complex_query(complex_queries)
-                    print("✓" if weaviate_complex_success else "✗")
+                    print("done" if weaviate_complex_success else "ERROR")
             
             # Natural language queries
             if nl_queries:
                 if faiss_insert_success:
                     print("  FAISS NL queries...", end=" ")
                     faiss_nl_success = self.benchmark_faiss_nl_query(nl_queries)
-                    print("✓" if faiss_nl_success else "✗")
+                    print("done" if faiss_nl_success else "ERROR")
                 
                 if self.weaviate_available and weaviate_insert_success:
                     print("  Weaviate NL queries...", end=" ")
                     weaviate_nl_success = self.benchmark_weaviate_nl_query(nl_queries)
-                    print("✓" if weaviate_nl_success else "✗")
+                    print("done" if weaviate_nl_success else "ERROR")
         
         # Deletion benchmarks (after all insertions)
         deletion_sizes = [50, 100, 200]
@@ -839,20 +807,17 @@ class VectorDBBenchmark:
         for del_size in deletion_sizes:
             print(f"\nTesting deletion size: {del_size}")
             
-            # FAISS Deletion
             if self.faiss_index and self.faiss_index.ntotal > del_size:
                 print("  FAISS deletion...", end=" ")
                 faiss_del_success = self.benchmark_faiss_deletion(del_size)
-                print("✓" if faiss_del_success else "✗")
+                print("done" if faiss_del_success else "ERROR")
             
-            # Weaviate Deletion
             if self.weaviate_available:
                 print("  Weaviate deletion...", end=" ")
                 weaviate_del_success = self.benchmark_weaviate_deletion(del_size)
-                print("✓" if weaviate_del_success else "✗")
+                print("done" if weaviate_del_success else "ERROR")
 
     def save_results_to_csv(self, output_dir: str):
-        """Save benchmark results to CSV"""
         os.makedirs(output_dir, exist_ok=True)
         
         # Prepare data for CSV
@@ -884,10 +849,9 @@ class VectorDBBenchmark:
         clean_model_name = self.model_name.replace('/', '_').replace('-', '_')
         csv_path = os.path.join(output_dir, f"{clean_model_name}_benchmark.csv")
         df.to_csv(csv_path, index=False)
-        print(f"✓ Results saved to {csv_path}")
+        print(f"Results saved to {csv_path}")
 
     def plot_results(self, output_dir: str):
-        """Generate performance plots"""
         os.makedirs(output_dir, exist_ok=True)
         
         # Set style
@@ -1054,10 +1018,9 @@ class VectorDBBenchmark:
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"✓ Plots saved to {plot_path}")
+        print(f"Plots saved to {plot_path}")
 
     def print_summary_report(self):
-        """Print a detailed summary report"""
         print(f"\n{'='*80}")
         print(f"DETAILED BENCHMARK SUMMARY - {self.model_name}")
         print(f"{'='*80}")
@@ -1103,10 +1066,10 @@ class VectorDBBenchmark:
                 weaviate_avg = np.mean(weaviate_times)
                 if faiss_avg < weaviate_avg:
                     speedup = weaviate_avg / faiss_avg
-                    print(f"  → FAISS is {speedup:.2f}x faster")
+                    print(f"  * FAISS is {speedup:.2f}x faster")
                 else:
                     speedup = faiss_avg / weaviate_avg
-                    print(f"  → Weaviate is {speedup:.2f}x faster")
+                    print(f"  * Weaviate is {speedup:.2f}x faster")
 
 def main():
     # Configuration
@@ -1138,20 +1101,15 @@ def main():
         print(f"\n[{i}/{len(models)}] Processing model: {model}")
         
         try:
-            # Initialize benchmark
             benchmark = VectorDBBenchmark(model)
             
-            # Run benchmark
             benchmark.run_benchmark(batch_sizes)
             
-            # Print detailed summary
             benchmark.print_summary_report()
             
-            # Save results
             benchmark.save_results_to_csv(output_dir)
             benchmark.plot_results(output_dir)
             
-            # Store results for summary
             all_results.append({
                 'model': model,
                 'faiss_avg_insert_time': np.mean(benchmark.results['faiss']['insertion_times']) if benchmark.results['faiss']['insertion_times'] else 0,
@@ -1168,18 +1126,17 @@ def main():
                 'weaviate_avg_deletion_time': np.mean(benchmark.results['weaviate']['deletion_times']) if benchmark.results['weaviate']['deletion_times'] else 0,
             })
             
-            print(f"✓ Completed model: {model}")
+            print(f"Completed model: {model}")
             
         except Exception as e:
-            print(f"✗ Failed to process model {model}: {e}")
+            print(f"Failed to process model {model}: {e}")
             continue
     
-    # Create summary report
     if all_results:
         summary_df = pd.DataFrame(all_results)
         summary_path = os.path.join(output_dir, "enhanced_benchmark_summary.csv")
         summary_df.to_csv(summary_path, index=False)
-        print(f"\n✓ Summary report saved to {summary_path}")
+        print(f"\nSummary report saved to {summary_path}")
         
         # Print summary
         print("\n" + "="*120)
@@ -1187,7 +1144,7 @@ def main():
         print("="*120)
         print(summary_df.to_string(index=False))
     
-    print(f"\n✓ Enhanced benchmark completed! Results saved in '{output_dir}' directory")
+    print(f"\nEnhanced benchmark completed! Results saved in '{output_dir}' directory")
     print("\nBenchmark includes:")
     print("- Insertion performance")
     print("- Deletion performance") 

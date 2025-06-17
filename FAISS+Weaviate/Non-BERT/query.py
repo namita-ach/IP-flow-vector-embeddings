@@ -11,42 +11,45 @@ import faiss
 import weaviate
 import os
 from tqdm import tqdm
+from tabulate import tabulate
+import time
+import re
 
 warnings.filterwarnings('ignore')
 
 class EmbeddingQuerySystem:
     def __init__(self, data_path=None, data_df=None):
-        """
-        Initialize the query system with network flow data
-        
-        Args:
-            data_path: Path to CSV file containing network flow data
-            data_df: DataFrame containing network flow data (alternative to data_path)
-        """
         # Load data
         if data_df is not None:
             self.data = data_df.copy()
         elif data_path is not None:
             self.data = pd.read_csv(data_path)
         else:
-            # Create sample data if none provided
+            # Use the same function to create random sample data
             self.data = self._create_sample_data()
         
-        # Define columns based on your original code structure
+        # Define columns based on the original code structure
         self.categorical_cols = ['ip.src', 'ip.dst', 'tcp.srcport', 'tcp.dstport', '_ws.col.protocol']
         self.continuous_cols = ['frame.len']
         
-        # Ensure required columns exist
+        # Ensure that the required columns exist- have to generalize to any sort of network flow data
         self._validate_columns()
         
-        # Initialize embeddings storage
+        # Initialize the embeddings storage
         self.embeddings = {
             'mlp': None,
             'autoencoder': None,
             'ip2vec': None
         }
         
-        # Initialize vector databases
+        # Store the trained models for query embedding generation
+        self.trained_models = {
+            'mlp': None,
+            'autoencoder': None,
+            'word2vec': None
+        }
+        
+        # Initialize the two vector databases
         self.faiss_indexes = {}
         self.weaviate_clients = {}
         
@@ -57,19 +60,19 @@ class EmbeddingQuerySystem:
         # Preprocess data
         self.processed_data = self._preprocess_data()
         
-        print(f"✓ Loaded {len(self.data)} network flow records")
-        print(f"✓ Columns: {list(self.data.columns)}")
+        print(f"Loaded {len(self.data)} network flow records")
+        print(f"Columns: {list(self.data.columns)}")
     
     def embed_all_data(self):
-        """Generate embeddings using all three methods"""
+        # this basically generates embeddings with all methods
         print("Generating embeddings for all methods...")
         self.generate_mlp_embeddings()
         self.generate_autoencoder_embeddings()
         self.generate_ip2vec_embeddings()
-        print("✓ All embeddings generated successfully!")
+        print("All embeddings generated successfully!")
     
     def _create_sample_data(self):
-        """Create sample network flow data for testing"""
+        # This is for when there's no data provided, we create a sample dataset
         np.random.seed(42)
         n_samples = 1000
         
@@ -89,7 +92,7 @@ class EmbeddingQuerySystem:
         return pd.DataFrame(data)
     
     def _validate_columns(self):
-        """Ensure all required columns exist in the data"""
+        # this is to ensure that all required columns exist in the data
         required_cols = self.categorical_cols + self.continuous_cols
         missing_cols = [col for col in required_cols if col not in self.data.columns]
         
@@ -98,7 +101,7 @@ class EmbeddingQuerySystem:
             self.data = self._create_sample_data()
     
     def _preprocess_data(self):
-        """Preprocess the data for embedding generation"""
+        # improtant for the mlp stuff
         processed_data = self.data.copy()
         
         # Encode categorical columns
@@ -116,20 +119,19 @@ class EmbeddingQuerySystem:
         return processed_data
     
     def generate_mlp_embeddings(self, embedding_dim=128):
-        """Generate MLP-based embeddings"""
         print("Generating MLP embeddings...")
         
-        # Prepare data
+        # Prepare the data with the preexisting function
         X_cat = self.processed_data[self.categorical_cols].values
         X_cont = self.processed_data[self.continuous_cols].values if self.continuous_cols else np.zeros((len(self.processed_data), 0))
         X = np.concatenate([X_cat, X_cont], axis=1)
         
-        # Convert to PyTorch tensors
+        # PyTorch tensor conversion
         X_tensor = torch.FloatTensor(X)
         dataset = TensorDataset(X_tensor)
         loader = DataLoader(dataset, batch_size=256, shuffle=False)
         
-        # Define the model
+        # Define the model- can expand later?
         input_dim = X.shape[1]
         model = nn.Sequential(
             nn.Linear(input_dim, 256),
@@ -139,7 +141,10 @@ class EmbeddingQuerySystem:
             nn.Linear(embedding_dim, embedding_dim)
         )
         
-        # Generate embeddings
+        # Store the trained model
+        self.trained_models['mlp'] = model
+        
+        # Generate the embeddings
         embeddings = []
         model.eval()
         with torch.no_grad():
@@ -149,29 +154,25 @@ class EmbeddingQuerySystem:
                 embeddings.append(outputs.numpy())
         
         self.embeddings['mlp'] = np.concatenate(embeddings, axis=0)
-        print(f"✓ MLP embeddings generated: {self.embeddings['mlp'].shape}")
+        print(f"MLP embeddings generated: {self.embeddings['mlp'].shape}")
         
-        # Create FAISS index
+        # Create the FAISS index
         self._create_faiss_index('mlp')
         
-        # Create Weaviate collection
+        # Create the Weaviate collection
         self._create_weaviate_collection('mlp')
     
     def generate_autoencoder_embeddings(self, embedding_dim=128):
-        """Generate Autoencoder-based embeddings"""
         print("Generating Autoencoder embeddings...")
         
-        # Prepare data
         X_cat = self.processed_data[self.categorical_cols].values
         X_cont = self.processed_data[self.continuous_cols].values if self.continuous_cols else np.zeros((len(self.processed_data), 0))
         X = np.concatenate([X_cat, X_cont], axis=1)
         
-        # Convert to PyTorch tensors
         X_tensor = torch.FloatTensor(X)
         dataset = TensorDataset(X_tensor)
         loader = DataLoader(dataset, batch_size=256, shuffle=False)
         
-        # Define autoencoder
         input_dim = X.shape[1]
         class Autoencoder(nn.Module):
             def __init__(self):
@@ -200,9 +201,8 @@ class EmbeddingQuerySystem:
         criterion = nn.MSELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         
-        # Train the autoencoder
         print("Training autoencoder...")
-        for epoch in range(10):
+        for epoch in range(10): # only 10 now, can expand later
             total_loss = 0
             for batch in loader:
                 inputs = batch[0]
@@ -216,7 +216,8 @@ class EmbeddingQuerySystem:
             if epoch % 5 == 0:
                 print(f"  Epoch {epoch}, Loss: {total_loss/len(loader):.4f}")
         
-        # Generate embeddings
+        self.trained_models['autoencoder'] = model
+        
         embeddings = []
         model.eval()
         with torch.no_grad():
@@ -226,16 +227,13 @@ class EmbeddingQuerySystem:
                 embeddings.append(encoded.numpy())
         
         self.embeddings['autoencoder'] = np.concatenate(embeddings, axis=0)
-        print(f"✓ Autoencoder embeddings generated: {self.embeddings['autoencoder'].shape}")
+        print(f"Autoencoder embeddings generated: {self.embeddings['autoencoder'].shape}")
         
-        # Create FAISS index
         self._create_faiss_index('autoencoder')
         
-        # Create Weaviate collection
         self._create_weaviate_collection('autoencoder')
     
     def generate_ip2vec_embeddings(self, embedding_dim=128):
-        """Generate IP2Vec embeddings using Word2Vec"""
         print("Generating IP2Vec embeddings...")
         
         def bucket_len(length):
@@ -247,7 +245,7 @@ class EmbeddingQuerySystem:
             except:
                 return "medium"
         
-        # Create sentences from network flows
+        # Create sentences from the network flows
         sentences = []
         for _, row in self.data.iterrows():
             sentence = [
@@ -260,7 +258,7 @@ class EmbeddingQuerySystem:
             ]
             sentences.append(sentence)
         
-        # Train Word2Vec model
+        # Train the word2ved model
         print("Training Word2Vec model...")
         model = Word2Vec(
             sentences,
@@ -272,6 +270,8 @@ class EmbeddingQuerySystem:
             epochs=10
         )
         
+        self.trained_models['word2vec'] = model
+        
         # Generate embeddings for each flow
         def embed_flow(flow_sentence, w2v_model):
             vectors = [w2v_model.wv[token] for token in flow_sentence if token in w2v_model.wv]
@@ -279,122 +279,118 @@ class EmbeddingQuerySystem:
         
         embeddings = np.array([embed_flow(sentence, model) for sentence in sentences])
         self.embeddings['ip2vec'] = embeddings
-        print(f"✓ IP2Vec embeddings generated: {self.embeddings['ip2vec'].shape}")
+        print(f"IP2Vec embeddings generated: {self.embeddings['ip2vec'].shape}")
         
-        # Create FAISS index
         self._create_faiss_index('ip2vec')
         
-        # Create Weaviate collection
         self._create_weaviate_collection('ip2vec')
     
     def _create_faiss_index(self, method: str):
-        """Create FAISS index for the specified embedding method"""
         if method not in self.embeddings or self.embeddings[method] is None:
             raise ValueError(f"No embeddings found for method {method}")
         
         embeddings = self.embeddings[method].astype('float32')
         dimension = embeddings.shape[1]
         
-        # Normalize embeddings for cosine similarity
         faiss.normalize_L2(embeddings)
         
-        # Create and train the index
         index = faiss.IndexFlatIP(dimension)
         index.add(embeddings)
         
         self.faiss_indexes[method] = index
-        print(f"✓ FAISS index created for {method} embeddings")
+        print(f"FAISS index created for {method} embeddings")
     
     def _create_weaviate_collection(self, method: str):
-        """Create Weaviate collection for the specified embedding method"""
         if method not in self.embeddings or self.embeddings[method] is None:
             raise ValueError(f"No embeddings found for method {method}")
         
-        # Initialize Weaviate client
-        client = weaviate.Client(
-            url="http://localhost:8080",  # Replace with your Weaviate instance
-            additional_headers={
-                "X-OpenAI-Api-Key": os.getenv("OPENAI_API_KEY")  # Optional, for generative search
+        try:
+            client = weaviate.Client(
+                url="http://localhost:8080",
+                timeout_config=(5, 15),  #(connect_timeout, read_timeout)
+            )
+            
+            # Test connection
+            if not client.is_ready():
+                print(f"Weaviate not ready for {method}. Skipping Weaviate collection creation.")
+                return
+            
+            # Define collection schema- this is also why it can't handle random IP data
+            # Weaviate requires a specific schema for each collection
+            # so here we define the class name and properties based on the method
+            class_name = f"NetworkFlows{method.capitalize()}"
+            class_obj = {
+                "class": class_name,
+                "vectorizer": "none",
+                "properties": [
+                    {"name": "source_ip", "dataType": ["text"]},
+                    {"name": "destination_ip", "dataType": ["text"]},
+                    {"name": "protocol", "dataType": ["text"]},
+                    {"name": "source_port", "dataType": ["int"]},
+                    {"name": "destination_port", "dataType": ["int"]},
+                    {"name": "frame_length", "dataType": ["int"]},
+                    {"name": "original_index", "dataType": ["int"]}
+                ]
             }
-        )
-        
-        # Define collection schema
-        class_obj = {
-            "class": f"NetworkFlows_{method.capitalize()}",
-            "vectorizer": "none",  # We'll provide our own vectors
-            "properties": [
-                {
-                    "name": "source_ip",
-                    "dataType": ["text"]
-                },
-                {
-                    "name": "destination_ip",
-                    "dataType": ["text"]
-                },
-                {
-                    "name": "protocol",
-                    "dataType": ["text"]
-                },
-                {
-                    "name": "source_port",
-                    "dataType": ["int"]
-                },
-                {
-                    "name": "destination_port",
-                    "dataType": ["int"]
-                },
-                {
-                    "name": "frame_length",
-                    "dataType": ["int"]
-                },
-                {
-                    "name": "original_index",
-                    "dataType": ["int"]
-                }
-            ]
-        }
-        
-        # Delete existing collection if it exists
-        if client.schema.exists(f"NetworkFlows_{method.capitalize()}"):
-            client.schema.delete_class(f"NetworkFlows_{method.capitalize()}")
-        
-        # Create new collection
-        client.schema.create_class(class_obj)
-        
-        # Add data to Weaviate with embeddings
-        with client.batch as batch:
-            batch.batch_size = 100
-            for idx, (_, row) in enumerate(tqdm(self.data.iterrows(), total=len(self.data), desc=f"Adding {method} to Weaviate")):
-                properties = {
-                    "source_ip": row['ip.src'],
-                    "destination_ip": row['ip.dst'],
-                    "protocol": row['_ws.col.protocol'],
-                    "source_port": int(row['tcp.srcport']),
-                    "destination_port": int(row['tcp.dstport']),
-                    "frame_length": int(row['frame.len']),
-                    "original_index": idx
-                }
+            
+            # Deleting existing collection if it exists
+            if client.schema.exists(class_name):
+                client.schema.delete_class(class_name)
+                time.sleep(1)  # Waiting for deletion to complete
+            
+            # Make new collection
+            client.schema.create_class(class_obj)
+            time.sleep(1)  # Wait for creation to complete
+            
+            # Add data to Weaviate with embeddings
+            batch_size = 50  # Smaller batch size for reliability
+            total_batches = (len(self.data) + batch_size - 1) // batch_size
+            
+            for batch_idx in tqdm(range(total_batches), desc=f"Adding {method} to Weaviate"):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, len(self.data))
                 
-                vector = self.embeddings[method][idx].astype('float32').tolist()
-                
-                client.batch.add_data_object(
-                    properties,
-                    f"NetworkFlows_{method.capitalize()}",
-                    vector=vector
-                )
-        
-        self.weaviate_clients[method] = client
-        print(f"✓ Weaviate collection created for {method} embeddings")
+                with client.batch as batch:
+                    batch.batch_size = batch_size
+                    
+                    for idx in range(start_idx, end_idx):
+                        row = self.data.iloc[idx]
+                        properties = {
+                            "source_ip": str(row['ip.src']),
+                            "destination_ip": str(row['ip.dst']),
+                            "protocol": str(row['_ws.col.protocol']),
+                            "source_port": int(row['tcp.srcport']),
+                            "destination_port": int(row['tcp.dstport']),
+                            "frame_length": int(row['frame.len']),
+                            "original_index": idx
+                        }
+                        
+                        vector = self.embeddings[method][idx].astype('float32').tolist()
+                        
+                        batch.add_data_object(
+                            properties,
+                            class_name,
+                            vector=vector
+                        )
+            
+            self.weaviate_clients[method] = client
+            print(f"Weaviate collection created for {method} embeddings")
+            
+        except Exception as e:
+            print(f"Failed to create Weaviate collection for {method}: {e}")
+            print(f"   Continuing without Weaviate support for {method}")
+            self.weaviate_clients[method] = None
     
     def create_query_embedding(self, query_text: str, method: str):
-        """Create embedding for a query string"""
         # Parse the query into components
         query_components = self._parse_query(query_text)
         
         # Create a temporary dataframe with the query
         query_df = pd.DataFrame([query_components])
         
-        # Process the query through the same pipeline
+        # Process the query through the same pipeline- so basically we have to encode the query
+        # using the same preprocessing as the training data
+        # so then we just compare the two embeddings 
         query_processed = query_df.copy()
         
         # Encode categorical columns using existing encoders
@@ -404,7 +400,7 @@ class EmbeddingQuerySystem:
                 try:
                     query_processed[col] = le.transform(query_processed[col].astype(str))
                 except ValueError:
-                    # Handle unseen categories
+                    # Handle unseen categories by using the most common category
                     query_processed[col] = 0
         
         # Scale continuous columns
@@ -417,39 +413,23 @@ class EmbeddingQuerySystem:
             X = np.concatenate([X_cat, X_cont], axis=1)
             X_tensor = torch.FloatTensor(X)
             
-            # Use the same model structure
-            input_dim = X.shape[1]
-            model = nn.Sequential(
-                nn.Linear(input_dim, 256),
-                nn.ReLU(),
-                nn.Linear(256, 128),
-                nn.ReLU(),
-                nn.Linear(128, 128)
-            )
-            
-            with torch.no_grad():
-                embedding = model(X_tensor).numpy()
-            return embedding
+            # Use the pretrained model
+            if self.trained_models['mlp'] is not None:
+                with torch.no_grad():
+                    embedding = self.trained_models['mlp'](X_tensor).numpy()
+                return embedding
         
         elif method == 'autoencoder':
-            # Similar to MLP but using encoder part
             X_cat = query_processed[self.categorical_cols].values
             X_cont = query_processed[self.continuous_cols].values if self.continuous_cols else np.zeros((len(query_processed), 0))
             X = np.concatenate([X_cat, X_cont], axis=1)
             X_tensor = torch.FloatTensor(X)
             
-            # Use encoder part
-            encoder = nn.Sequential(
-                nn.Linear(X.shape[1], 256),
-                nn.ReLU(),
-                nn.Linear(256, 128),
-                nn.ReLU(),
-                nn.Linear(128, 128)
-            )
-            
-            with torch.no_grad():
-                embedding = encoder(X_tensor).numpy()
-            return embedding
+            # Use encoder part of trained autoencoder
+            if self.trained_models['autoencoder'] is not None:
+                with torch.no_grad():
+                    embedding, _ = self.trained_models['autoencoder'](X_tensor)
+                    return embedding.numpy()
         
         elif method == 'ip2vec':
             # Create sentence from query
@@ -462,12 +442,18 @@ class EmbeddingQuerySystem:
                 f"len:{self._bucket_len(query_components['frame.len'])}"
             ]
             
-            # For simplicity, return average of existing embeddings
-            # In practice, you'd retrain or use the existing Word2Vec model
-            return np.mean(self.embeddings['ip2vec'], axis=0).reshape(1, -1)
+            if self.trained_models['word2vec'] is not None:
+                w2v_model = self.trained_models['word2vec']
+                vectors = [w2v_model.wv[token] for token in sentence if token in w2v_model.wv]
+                if vectors:
+                    embedding = np.mean(vectors, axis=0).reshape(1, -1)
+                    return embedding
+                else:
+                    return np.random.randn(1, w2v_model.vector_size)
+        
+        return np.random.randn(1, 128)
     
     def _parse_query(self, query_text: str) -> Dict:
-        """Parse a natural language query into network flow components"""
         query_lower = query_text.lower()
         
         # Default values
@@ -480,8 +466,12 @@ class EmbeddingQuerySystem:
             'frame.len': 1500
         }
         
-        # Extract IP addresses
-        import re
+        # Extract IP addresses- just regex for simplicity
+        # this is a very basic IP extraction, can be improved
+        # but for the sake of this poc, it should suffice
+        
+# ALSO, no language model is used here, just regex, so it's not as robust as it could be
+
         ip_pattern = r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
         ips = re.findall(ip_pattern, query_text)
         if len(ips) >= 1:
@@ -511,7 +501,6 @@ class EmbeddingQuerySystem:
         return query_components
     
     def _bucket_len(self, length):
-        """Bucket frame length for IP2Vec"""
         try:
             length = float(length)
             if length < 100: return "small"
@@ -521,21 +510,6 @@ class EmbeddingQuerySystem:
             return "medium"
     
     def query_similar(self, query_text: str, method: str, top_k: int = 5) -> Dict[str, List[Tuple[int, float, Dict]]]:
-        """
-        Find similar network flows using all available databases
-        
-        Args:
-            query_text: Natural language query
-            method: Embedding method ('mlp', 'autoencoder', 'ip2vec')
-            top_k: Number of similar flows to return
-            
-        Returns:
-            Dictionary with results from each database:
-            {
-                'faiss': [(index, score, flow_data), ...],
-                'weaviate': [(index, score, flow_data), ...]
-            }
-        """
         if method not in self.embeddings or self.embeddings[method] is None:
             raise ValueError(f"Embeddings for method '{method}' not generated. Call embed_all_data() first.")
         
@@ -555,51 +529,108 @@ class EmbeddingQuerySystem:
             D, I = self.faiss_indexes[method].search(query_vector, top_k)
             
             for score, idx in zip(D[0], I[0]):
-                if idx >= 0:  # -1 indicates no result
+                if idx >= 0 and idx < len(self.data):  # Valid index check
                     flow_data = self.data.iloc[idx].to_dict()
                     results['faiss'].append((idx, float(score), flow_data))
         
         # Weaviate search
-        if method in self.weaviate_clients:
-            query_vector = query_embedding.astype('float32').tolist()
-            
-            weaviate_results = self.weaviate_clients[method].query\
-                .get(f"NetworkFlows_{method.capitalize()}", [
-                    "source_ip",
-                    "destination_ip",
-                    "protocol",
-                    "source_port",
-                    "destination_port",
-                    "frame_length",
-                    "original_index"
-                ])\
-                .with_near_vector({
-                    "vector": query_vector,
-                    "certainty": 0.7  # Adjust as needed
-                })\
-                .with_limit(top_k)\
-                .do()
-            
-            if 'data' in weaviate_results and 'Get' in weaviate_results['data']:
-                for item in weaviate_results['data']['Get'][f"NetworkFlows_{method.capitalize()}"]:
-                    idx = item['original_index']
-                    score = item['_additional']['certainty']  # Weaviate's certainty score
-                    flow_data = {
-                        'ip.src': item['source_ip'],
-                        'ip.dst': item['destination_ip'],
-                        '_ws.col.protocol': item['protocol'],
-                        'tcp.srcport': item['source_port'],
-                        'tcp.dstport': item['destination_port'],
-                        'frame.len': item['frame_length']
-                    }
-                    results['weaviate'].append((idx, float(score), flow_data))
+        if method in self.weaviate_clients and self.weaviate_clients[method] is not None:
+            try:
+                query_vector = query_embedding[0].astype('float32').tolist()
+                class_name = f"NetworkFlows{method.capitalize()}"
+                
+                weaviate_results = self.weaviate_clients[method].query\
+                    .get(class_name, [
+                        "source_ip",
+                        "destination_ip",
+                        "protocol",
+                        "source_port",
+                        "destination_port",
+                        "frame_length",
+                        "original_index"
+                    ])\
+                    .with_near_vector({
+                        "vector": query_vector
+                    })\
+                    .with_limit(top_k)\
+                    .with_additional(['certainty'])\
+                    .do()
+                
+                if ('data' in weaviate_results and 
+                    'Get' in weaviate_results['data'] and 
+                    class_name in weaviate_results['data']['Get']):
+                    
+                    for item in weaviate_results['data']['Get'][class_name]:
+                        idx = item['original_index']
+                        # Weaviate certainty ranges from 0-1, higher is better
+                        score = item['_additional']['certainty'] if '_additional' in item else 0.5
+                        flow_data = {
+                            'ip.src': item['source_ip'],
+                            'ip.dst': item['destination_ip'],
+                            '_ws.col.protocol': item['protocol'],
+                            'tcp.srcport': item['source_port'],
+                            'tcp.dstport': item['destination_port'],
+                            'frame.len': item['frame_length']
+                        }
+                        results['weaviate'].append((idx, float(score), flow_data))
+                        
+            except Exception as e:
+                print(f"Weaviate search failed for {method}: {e}")
+                results['weaviate'] = []
         
         return results
     
+    def _display_results_table(self, results: Dict, query: str, method: str):
+        print(f"\nQuery: '{query}' using {method.upper()} embeddings")
+        print("=" * 120)
+        
+        faiss_results = results.get('faiss', [])
+        weaviate_results = results.get('weaviate', [])
+        
+        table_data = []
+        max_results = max(len(faiss_results), len(weaviate_results))
+        
+        for i in range(max_results):
+            row = [f"Rank {i+1}"]
+            
+            # FAISS column
+            if i < len(faiss_results):
+                idx, score, flow_data = faiss_results[i]
+                faiss_info = (f"Score: {score:.4f}\n"
+                            f"Src: {flow_data['ip.src']}\n"
+                            f"Dst: {flow_data['ip.dst']}\n"
+                            f"Protocol: {flow_data['_ws.col.protocol']}\n"
+                            f"Ports: {flow_data['tcp.srcport']} to {flow_data['tcp.dstport']}\n"
+                            f"Length: {flow_data['frame.len']}")
+            else:
+                faiss_info = "No result"
+            
+            # Weaviate column
+            if i < len(weaviate_results):
+                idx, score, flow_data = weaviate_results[i]
+                weaviate_info = (f"Score: {score:.4f}\n"
+                               f"Src: {flow_data['ip.src']}\n"
+                               f"Dst: {flow_data['ip.dst']}\n"
+                               f"Protocol: {flow_data['_ws.col.protocol']}\n"
+                               f"Ports: {flow_data['tcp.srcport']} to {flow_data['tcp.dstport']}\n"
+                               f"Length: {flow_data['frame.len']}")
+            else:
+                weaviate_info = "No result"
+            
+            row.extend([faiss_info, weaviate_info])
+            table_data.append(row)
+        
+        headers = ["Rank", "FAISS Results", "Weaviate Results"]
+        print(tabulate(table_data, headers=headers, tablefmt="grid", maxcolwidths=[8, 40, 40]))
+        
+        print(f"\nSummary:")
+        print(f"   FAISS returned {len(faiss_results)} results")
+        print(f"   Weaviate returned {len(weaviate_results)} results")
+        print("=" * 120)
+    
     def interactive_query(self):
-        """Interactive query interface"""
         print("\n" + "="*60)
-        print("🔍 NETWORK FLOW EMBEDDING QUERY SYSTEM")
+        print("NETWORK FLOW EMBEDDING QUERY SYSTEM")
         print("="*60)
         print("Available methods: mlp, autoencoder, ip2vec")
         print("Example queries:")
@@ -628,43 +659,27 @@ class EmbeddingQuerySystem:
                     continue
                 
                 # Perform query
-                print(f"\n🔍 Searching for: '{query}' using {method.upper()} embeddings...")
+                print(f"\nSearching for: '{query}' using {method.upper()} embeddings...")
                 results = self.query_similar(query, method, top_k=5)
                 
-                # Display results
-                for db_name, db_results in results.items():
-                    print(f"\n📊 Top 5 Similar Network Flows from {db_name.upper()}:")
-                    print("-" * 80)
-                    
-                    for i, (idx, score, flow_data) in enumerate(db_results, 1):
-                        print(f"\n{i}. Similarity Score: {score:.4f}")
-                        print(f"   Index: {idx}")
-                        print(f"   Source IP: {flow_data['ip.src']}")
-                        print(f"   Destination IP: {flow_data['ip.dst']}")
-                        print(f"   Protocol: {flow_data['_ws.col.protocol']}")
-                        print(f"   Source Port: {flow_data['tcp.srcport']}")
-                        print(f"   Destination Port: {flow_data['tcp.dstport']}")
-                        print(f"   Frame Length: {flow_data['frame.len']}")
-                        print("-" * 40)
+                self._display_results_table(results, query, method)
                 
             except KeyboardInterrupt:
                 print("\nGoodbye!")
                 break
             except Exception as e:
                 print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
 
 def main():
-    """Main function to run the query system"""
     print("Initializing Network Flow Embedding Query System...")
-    
-    # Initialize the system (with sample data)
     system = EmbeddingQuerySystem()
     
-    # Generate all embeddings
+    # Generate embeddings
     system.embed_all_data()
     
-    # Start interactive query
     system.interactive_query()
 
 if __name__ == "__main__":
